@@ -1,0 +1,175 @@
+=============================================================================
+CODE SNIPPETS สำหรับแก้ไขไฟล์ create.php
+=============================================================================
+
+=============================================================================
+SNIPPET 1: เพิ่มการรับค่าฟิลด์ package (แทรกหลังบรรทัด 294)
+=============================================================================
+
+// 🆕 รับค่าฟิลด์หน่วยบรรจุ
+$package_qty = !empty($_POST['package_qty'][$i]) ? floatval($_POST['package_qty'][$i]) : null;
+$package_unit_id = !empty($_POST['package_unit_id'][$i]) ? intval($_POST['package_unit_id'][$i]) : null;
+$qty_per_package = !empty($_POST['qty_per_package'][$i]) ? floatval($_POST['qty_per_package'][$i]) : null;
+
+// 🆕 Validate: ถ้ากรอกฟิลด์ package ต้องกรอกครบทั้ง 3 ฟิลด์
+if (($package_qty !== null || $package_unit_id !== null || $qty_per_package !== null) &&
+    ($package_qty === null || $package_unit_id === null || $qty_per_package === null)) {
+    throw new Exception("กรุณากรอกข้อมูลหน่วยบรรจุให้ครบถ้วน (จำนวน, หน่วย, ปริมาณต่อหน่วย)");
+}
+
+// 🆕 Validate: package_qty × qty_per_package ต้องเท่ากับ quantity
+if ($package_qty !== null && $qty_per_package !== null) {
+    $calculated_qty = $package_qty * $qty_per_package;
+    if (abs($calculated_qty - $quantity) > 0.01) { // ยอมให้ผิดเพี้ยน 0.01
+        throw new Exception("น้ำหนักรวมไม่ตรงกับการคำนวณ (จำนวนกระป๋อง × น้ำหนักต่อกระป๋อง)");
+    }
+}
+
+=============================================================================
+SNIPPET 2: แก้ไข SQL INSERT (แทนบรรทัด 297-302)
+=============================================================================
+
+$stmt = $conn->prepare("
+    INSERT INTO PO_Items
+    (po_id, line_number, product_id, quantity, purchase_unit_id, stock_unit_id,
+     conversion_factor, stock_quantity, unit_price, total_price, item_type_id, status, notes,
+     package_qty, package_unit_id, qty_per_package)
+    VALUES (?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)
+");
+
+=============================================================================
+SNIPPET 3: แก้ไข Execute Parameters (แทนบรรทัด 304-307)
+=============================================================================
+
+$stmt->execute([
+    $po_id, $line_number, $product_id, $quantity, $purchase_unit_id, $purchase_unit_id,
+    $quantity, $unit_price, $total_price, $item_type_id_material, $notes_item,
+    $package_qty, $package_unit_id, $qty_per_package
+]);
+
+=============================================================================
+SNIPPET 4: HTML Table Header (แทน <thead> ของ Material Items Table)
+=============================================================================
+
+<thead>
+    <tr>
+        <th style="width: 22%;">สินค้า</th>
+        <th style="width: 8%;">น้ำหนักรวม</th>
+        <th style="width: 8%;">หน่วย</th>
+        <th style="width: 7%;" class="text-center">จำนวนบรรจุ 🆕</th>
+        <th style="width: 8%;" class="text-center">หน่วยบรรจุ 🆕</th>
+        <th style="width: 7%;" class="text-center">ต่อหน่วย 🆕</th>
+        <th style="width: 10%;">ราคาต่อหน่วย</th>
+        <th style="width: 10%;">ยอดรวม</th>
+        <th style="width: 14%;">หมายเหตุ</th>
+        <th style="width: 6%;"></th>
+    </tr>
+</thead>
+
+=============================================================================
+SNIPPET 5: HTML Table Row - ฟิลด์ package ใหม่ (แทรกระหว่าง purchase_unit และ unit_price)
+=============================================================================
+
+<!-- 🆕 ฟิลด์ใหม่: จำนวนบรรจุ -->
+<td><input type="number" name="package_qty[]" step="0.01" placeholder="0" class="form-control text-end package-qty-field"></td>
+
+<!-- 🆕 ฟิลด์ใหม่: หน่วยบรรจุ -->
+<td>
+    <select name="package_unit_id[]" class="form-select package-unit-field">
+        <option value="">-- เลือก --</option>
+        <?php
+        // กรองเฉพาะหน่วยบรรจุ
+        $package_units = array_filter($units, function($u) {
+            return in_array($u['unit_code'], ['CAN', 'DRUM', 'PAIL', 'BUCKET', 'CARTON', 'BOX', 'ROLL', 'REEL', 'SPOOL', 'BAG', 'SACK', 'BUNDLE', 'PACK', 'BOTTLE']);
+        });
+        foreach ($package_units as $unit):
+        ?>
+        <option value="<?= htmlspecialchars($unit['unit_id']) ?>"
+                data-symbol="<?= htmlspecialchars($unit['unit_symbol']) ?>">
+            <?= htmlspecialchars($unit['unit_name_th'] ?? $unit['unit_name']) ?>
+        </option>
+        <?php endforeach; ?>
+    </select>
+</td>
+
+<!-- 🆕 ฟิลด์ใหม่: ปริมาณต่อหน่วยบรรจุ -->
+<td><input type="number" name="qty_per_package[]" step="0.01" placeholder="0" class="form-control text-end qty-per-package-field"></td>
+
+=============================================================================
+SNIPPET 6: JavaScript Auto-calculate (แทรกหลังบรรทัด 1549 ใน addMaterialRowListeners)
+=============================================================================
+
+// 🆕 Package calculation listeners
+const packageQtyField = row.querySelector('.package-qty-field');
+const qtyPerPackageField = row.querySelector('.qty-per-package-field');
+
+if (packageQtyField && qtyPerPackageField) {
+    // Auto-calculate total quantity when package fields change
+    const autoCalcQuantity = () => {
+        const packageQty = parseFloat(packageQtyField.value) || 0;
+        const qtyPerPkg = parseFloat(qtyPerPackageField.value) || 0;
+
+        if (packageQty > 0 && qtyPerPkg > 0) {
+            const totalQty = packageQty * qtyPerPkg;
+            quantityField.value = totalQty.toFixed(3);
+            updateRowTotal(row);
+
+            // เปลี่ยนสีพื้นหลังเป็นเขียวอ่อน แสดงว่าคำนวณอัตโนมัติ
+            quantityField.style.backgroundColor = '#d4edda';
+        } else {
+            quantityField.style.backgroundColor = '';
+        }
+    };
+
+    packageQtyField.addEventListener('input', autoCalcQuantity);
+    qtyPerPackageField.addEventListener('input', autoCalcQuantity);
+
+    // Validate: ถ้ากรอก quantity เอง ให้เช็คว่าตรงกับการคำนวณหรือไม่
+    quantityField.addEventListener('blur', () => {
+        const packageQty = parseFloat(packageQtyField.value) || 0;
+        const qtyPerPkg = parseFloat(qtyPerPackageField.value) || 0;
+        const manualQty = parseFloat(quantityField.value) || 0;
+
+        if (packageQty > 0 && qtyPerPkg > 0) {
+            const calculatedQty = packageQty * qtyPerPkg;
+            if (Math.abs(calculatedQty - manualQty) > 0.01) {
+                alert(`⚠️ คำเตือน: น้ำหนักรวมไม่ตรงกับการคำนวณ\n` +
+                      `${packageQty} × ${qtyPerPkg} = ${calculatedQty.toFixed(3)}\n` +
+                      `แต่คุณกรอก: ${manualQty}`);
+                quantityField.style.backgroundColor = '#f8d7da';
+            } else {
+                quantityField.style.backgroundColor = '#d4edda';
+            }
+        }
+    });
+}
+
+=============================================================================
+SNIPPET 7: Alert/คำแนะนำ (แทรกก่อนตาราง Material Items ประมาณบรรทัด 960)
+=============================================================================
+
+<div class="alert alert-info mb-3">
+    <h6 class="mb-2"><i class="fas fa-info-circle"></i> วิธีกรอกข้อมูลหน่วยบรรจุ</h6>
+    <small>
+        <strong>ตัวอย่าง:</strong> สั่งหมึก 5 กระป๋อง กระป๋องละ 2 กิโล รวม 10 กิโล<br>
+        • <strong>จำนวนบรรจุ:</strong> 5<br>
+        • <strong>หน่วยบรรจุ:</strong> กระป๋อง<br>
+        • <strong>ต่อหน่วย:</strong> 2<br>
+        • <strong>น้ำหนักรวม:</strong> 10 (คำนวณอัตโนมัติ = 5 × 2)<br>
+        <span class="text-muted">หมายเหตุ: ถ้าไม่มีหน่วยบรรจุ สามารถข้ามช่องนี้ได้</span>
+    </small>
+</div>
+
+=============================================================================
+SNIPPET 8: ต้องเพิ่ม class ให้กับฟิลด์ quantity (แก้ไข <td> ของ quantity)
+=============================================================================
+
+<!-- เดิม -->
+<td><input type="number" name="quantity[]" step="0.01" required placeholder="0.00" class="form-control"></td>
+
+<!-- ใหม่ - เพิ่ม class "quantity-field" -->
+<td><input type="number" name="quantity[]" step="0.01" required placeholder="0.00" class="form-control quantity-field"></td>
+
+=============================================================================
+จบ CODE SNIPPETS สำหรับ create.php
+=============================================================================

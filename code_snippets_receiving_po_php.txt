@@ -1,0 +1,122 @@
+=============================================================================
+CODE SNIPPETS สำหรับแก้ไขไฟล์ receiving_po.php
+=============================================================================
+
+=============================================================================
+SNIPPET 1: แก้ไข SQL SELECT (แทนบรรทัด 455-467)
+=============================================================================
+
+$stmt = $pdo->prepare("
+    SELECT
+        pi.*,
+        mp.SSP_Code, mp.Name as product_name, mp.Name2,
+        u_purchase.unit_name as purchase_unit_name, u_purchase.unit_symbol as purchase_unit_symbol,
+        u_stock.unit_name as stock_unit_name, u_stock.unit_symbol as stock_unit_symbol,
+        u_package.unit_name as package_unit_name, u_package.unit_name_th as package_unit_name_th, u_package.unit_symbol as package_unit_symbol,
+        sp.W_mm, sp.L_mm, sp.gsm
+    FROM PO_Items pi
+    LEFT JOIN Master_Products_ID mp ON pi.product_id = mp.id
+    LEFT JOIN Units u_purchase ON pi.purchase_unit_id = u_purchase.unit_id
+    LEFT JOIN Units u_stock ON pi.stock_unit_id = u_stock.unit_id
+    LEFT JOIN Units u_package ON pi.package_unit_id = u_package.unit_id
+    LEFT JOIN Specific_Paperboard sp ON pi.product_id = sp.product_id
+    WHERE pi.po_id = ?
+    ORDER BY pi.line_number
+");
+
+=============================================================================
+SNIPPET 2: แสดงข้อมูล Package ใน Card (แทรกในส่วนแสดงรายละเอียด PO Item)
+=============================================================================
+
+<?php if (!empty($item['package_qty']) && !empty($item['package_unit_name'])): ?>
+<div class="row mb-2">
+    <div class="col-4"><strong>📦 หน่วยบรรจุ:</strong></div>
+    <div class="col-8">
+        <?= number_format($item['package_qty'], 2) ?>
+        <?= htmlspecialchars($item['package_unit_name_th'] ?? $item['package_unit_name']) ?>
+        <?php if (!empty($item['qty_per_package'])): ?>
+            (<?= htmlspecialchars($item['package_unit_name_th'] ?? $item['package_unit_name']) ?>ละ
+            <?= number_format($item['qty_per_package'], 2) ?>
+            <?= htmlspecialchars($item['purchase_unit_name']) ?>)
+        <?php endif; ?>
+    </div>
+</div>
+<div class="row mb-2">
+    <div class="col-4"><strong>⚖️ น้ำหนักรวม:</strong></div>
+    <div class="col-8">
+        <?= number_format($item['quantity'], 2) ?>
+        <?= htmlspecialchars($item['purchase_unit_name']) ?>
+        <?php if (!empty($item['package_qty']) && !empty($item['qty_per_package'])): ?>
+            <small class="text-muted">
+                (<?= number_format($item['package_qty'], 2) ?> × <?= number_format($item['qty_per_package'], 2) ?>)
+            </small>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+=============================================================================
+SNIPPET 3: แสดงข้อมูล Package ในตารางสรุป PO (ถ้ามี)
+=============================================================================
+
+<!-- เพิ่มคอลัมน์ในตารางแสดง PO Items -->
+<th>หน่วยบรรจุ</th>
+
+<!-- และในส่วน <tbody> -->
+<td>
+    <?php if (!empty($item['package_qty']) && !empty($item['package_unit_name'])): ?>
+        <?= number_format($item['package_qty'], 0) ?>
+        <?= htmlspecialchars($item['package_unit_name_th'] ?? $item['package_unit_name']) ?>
+        <br>
+        <small class="text-muted">
+            (<?= htmlspecialchars($item['package_unit_name_th'] ?? $item['package_unit_name']) ?>ละ
+            <?= number_format($item['qty_per_package'], 2) ?>
+            <?= htmlspecialchars($item['purchase_unit_symbol']) ?>)
+        </small>
+    <?php else: ?>
+        <small class="text-muted">-</small>
+    <?php endif; ?>
+</td>
+
+=============================================================================
+SNIPPET 4: JavaScript - อัพเดทข้อมูล Package ใน Modal (ถ้ามี)
+=============================================================================
+
+// เพิ่มในส่วนที่สร้าง HTML สำหรับแสดงรายละเอียดสินค้า
+let packageInfo = '';
+if (item.package_qty && item.package_unit_name) {
+    packageInfo = `
+        <div class="row mb-2">
+            <div class="col-5"><strong>📦 หน่วยบรรจุ:</strong></div>
+            <div class="col-7">
+                ${parseFloat(item.package_qty).toLocaleString('th-TH', {minimumFractionDigits: 0, maximumFractionDigits: 2})}
+                ${item.package_unit_name_th || item.package_unit_name}
+                ${item.qty_per_package ?
+                    `<br><small class="text-muted">(${item.package_unit_name_th || item.package_unit_name}ละ
+                    ${parseFloat(item.qty_per_package).toLocaleString('th-TH', {minimumFractionDigits: 2, maximumFractionDigits: 3})}
+                    ${item.purchase_unit_symbol || item.purchase_unit_name})</small>`
+                    : ''}
+            </div>
+        </div>
+    `;
+}
+
+=============================================================================
+SNIPPET 5: คำแนะนำสำหรับผู้ใช้ (Alert/Info Box)
+=============================================================================
+
+<div class="alert alert-info">
+    <i class="fas fa-info-circle"></i>
+    <strong>ข้อมูลหน่วยบรรจุ:</strong>
+    ระบบจะแสดงจำนวนหน่วยบรรจุ (เช่น กระป๋อง, ถัง) พร้อมกับน้ำหนักต่อหน่วย
+    เพื่อให้ง่ายต่อการตรวจนับสินค้าตอนรับของ
+</div>
+
+=============================================================================
+จบ CODE SNIPPETS สำหรับ receiving_po.php
+=============================================================================
+
+หมายเหตุ:
+- หาตำแหน่งที่เหมาะสมในไฟล์เพื่อแทรก code snippets เหล่านี้
+- ตรวจสอบให้แน่ใจว่าไม่มี syntax error
+- ทดสอบทุกครั้งหลังแก้ไข
