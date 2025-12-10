@@ -1,231 +1,216 @@
 <?php
-// pages/po/list.php - หน้าแสดงรายการ Purchase Order
+// pages/materials/list.php - แก้ไขปัญหา Redirect Loop
 require_once "../../config/config.php";
 require_once "../../classes/Auth.php";
 
-$auth = new Auth();
-$auth->requireLogin();
-
-// Helper function for input sanitization
-if (!function_exists('sanitizeInput')) {
-    function sanitizeInput($input) {
-        return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
-    }
+// เริ่ม session ถ้ายังไม่เริ่ม
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
 
-// เชื่อมต่อฐานข้อมูล
+// ป้องกัน redirect loop
+if (!isset($_SESSION['redirect_check'])) {
+    $_SESSION['redirect_check'] = 0;
+}
+$_SESSION['redirect_check']++;
+
+// ถ้า redirect เกิน 3 ครั้ง ให้หยุด
+if ($_SESSION['redirect_check'] > 3) {
+    unset($_SESSION['redirect_check']);
+    die('Error: Redirect loop detected. Please clear cookies and try again.');
+}
+
 try {
-    require_once "../../config/database.php";
-    $database = new Database();
-    $conn = $database->getConnection();
+    $auth = new Auth();
+    $auth->requireLogin();
+    
+    // รีเซ็ต redirect counter เมื่อผ่าน auth
+    unset($_SESSION['redirect_check']);
+    
 } catch (Exception $e) {
-    error_log("Database connection failed: " . $e->getMessage());
-    die("Database connection failed. Please try again later.");
+    // ถ้ามีปัญหากับ Auth ให้แสดง error แทนการ redirect
+    unset($_SESSION['redirect_check']);
+    die('Authentication Error: ' . $e->getMessage() . '<br><a href="../../login.php">Login Again</a>');
 }
 
-// ข้อความแจ้ง
-$message = '';
-$message_type = '';
-
-// ตรวจสอบ success message จาก session (จากหน้า create.php)
-if (isset($_SESSION['success_message'])) {
-    $message = $_SESSION['success_message'];
-    $message_type = 'success';
-    unset($_SESSION['success_message']); // ลบ message หลังแสดงแล้ว
+// ข้อมูลผู้ใช้
+$user_id = $_SESSION['user_id'] ?? 0;
+$username = $_SESSION['username'] ?? 'guest';
+$success_message = $_SESSION['success_message'] ?? '';
+$error_message = $_SESSION['error_message'] ?? '';
+if ($success_message) {
+    unset($_SESSION['success_message']);
 }
-// Parameters สำหรับการค้นหาและ Filter
-$search = sanitizeInput($_GET['search'] ?? '');
-$status_filter = sanitizeInput($_GET['status'] ?? '');
-$type_filter = sanitizeInput($_GET['type'] ?? '');
-$supplier_filter = intval($_GET['supplier'] ?? 0);
-$date_from = $_GET['date_from'] ?? '';
-$date_to = $_GET['date_to'] ?? '';
+if ($error_message) {
+    unset($_SESSION['error_message']);
+}
 
-// Pagination - แปลงเป็น integer อย่างชัดเจน
+// ตัวแปรสำหรับการค้นหา
+$search_query = $_GET['search'] ?? '';
+$material_type_filter = $_GET['material_type'] ?? '';
+$group_filter = $_GET['group'] ?? '';
+$supplier_filter = $_GET['supplier'] ?? '';
+$status_filter = $_GET['status'] ?? '';
+
+// ข้อมูลสำหรับการแบ่งหน้า
 $page = max(1, intval($_GET['page'] ?? 1));
 $per_page = 20;
 $offset = ($page - 1) * $per_page;
 
-// ตรวจสอบให้แน่ใจว่าเป็น integer
-$offset = intval($offset);
-$per_page = intval($per_page);
+// ตัวแปรสำหรับแสดงข้อความ
+$success_message = '';
+$error_message = '';
 
-// สร้าง WHERE clause
-$where_conditions = [];
-$params = [];
-
-if (!empty($search)) {
-    $where_conditions[] = "(ph.po_number LIKE ? OR s.supplier_name LIKE ? OR ph.notes LIKE ?)";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
-}
-
-if (!empty($status_filter)) {
-    $where_conditions[] = "ph.status = ?";
-    $params[] = $status_filter;
-}
-
-if (!empty($type_filter)) {
-    if ($type_filter === 'material') {
-        $where_conditions[] = "ph.is_material_po = 1";
-    } elseif ($type_filter === 'freight') {
-        $where_conditions[] = "ph.is_freight_po = 1";
-    }
-}
-
-if (!empty($supplier_filter)) {
-    $where_conditions[] = "ph.supplier_id = ?";
-    $params[] = $supplier_filter;
-}
-
-if (!empty($date_from)) {
-    $where_conditions[] = "ph.po_date >= ?";
-    $params[] = $date_from;
-}
-
-if (!empty($date_to)) {
-    $where_conditions[] = "ph.po_date <= ?";
-    $params[] = $date_to;
-}
-
-$where_clause = empty($where_conditions) ? '' : 'WHERE ' . implode(' AND ', $where_conditions);
-
+// เชื่อมต่อฐานข้อมูล
 try {
-    // ทดสอบการเชื่อมต่อฐานข้อมูลก่อน
-    $test_query = "SELECT 1 as test";
-    $test_stmt = $conn->prepare($test_query);
-    $test_stmt->execute();
-    $test_result = $test_stmt->fetch();
+    $pdo = new PDO("sqlsrv:server=" . DB_SERVER . ";Database=" . DB_NAME, DB_USERNAME, DB_PASSWORD);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    if (!$test_result) {
-        throw new Exception("Database connection test failed");
+    // สร้างเงื่อนไข WHERE
+    $where_conditions = ['1=1'];
+    $params = [];
+    
+    if (!empty($search_query)) {
+        $where_conditions[] = "(mp.SSP_Code LIKE ? OR mp.Name LIKE ? OR mp.Name2 LIKE ?)";
+        $params[] = "%$search_query%";
+        $params[] = "%$search_query%";
+        $params[] = "%$search_query%";
     }
     
-    // นับจำนวนทั้งหมด
-    $count_sql = "
-        SELECT COUNT(*) as total
-        FROM PO_Header ph
-        LEFT JOIN Suppliers s ON ph.supplier_id = s.supplier_id
-        $where_clause
-    ";
+    if (!empty($material_type_filter)) {
+        $where_conditions[] = "mp.material_type_id = ?";
+        $params[] = $material_type_filter;
+    }
     
-    $stmt = $conn->prepare($count_sql);
-    $stmt->execute($params);
-    $count_result = $stmt->fetch(PDO::FETCH_ASSOC);
-    $total_records = $count_result ? intval($count_result['total']) : 0;
+    if (!empty($group_filter)) {
+        $where_conditions[] = "mp.group_id = ?";
+        $params[] = $group_filter;
+    }
+    
+    if (!empty($supplier_filter)) {
+        $where_conditions[] = "mp.supplier_id = ?";
+        $params[] = $supplier_filter;
+    }
+    
+    if (!empty($status_filter)) {
+        if ($status_filter === 'active') {
+            $where_conditions[] = "mp.is_active = 1";
+        } else if ($status_filter === 'inactive') {
+            $where_conditions[] = "mp.is_active = 0";
+        }
+    }
+    
+    $where_clause = implode(' AND ', $where_conditions);
+    
+    // นับจำนวนรายการทั้งหมด
+    $count_sql = "SELECT COUNT(*) as total 
+                  FROM Master_Products_ID mp 
+                  LEFT JOIN Material_Types mt ON mp.material_type_id = mt.material_type_id
+                  LEFT JOIN Groups g ON mp.group_id = g.id
+                  LEFT JOIN Suppliers s ON mp.supplier_id = s.supplier_id
+                  WHERE $where_clause";
+    $count_stmt = $pdo->prepare($count_sql);
+    $count_stmt->execute($params);
+    $total_records = $count_stmt->fetch()['total'];
     $total_pages = ceil($total_records / $per_page);
     
-    // ดึงข้อมูล PO - ใช้ query แบบแยกเพื่อหลีกเลี่ยงปัญหา parameter binding
-    $sql = "
-        SELECT ph.po_id, ph.po_number, ph.po_date, ph.supplier_id, ph.total_amount, 
-               ph.status, ph.is_material_po, ph.is_freight_po, ph.po_category,
-               ph.created_date, ph.notes, ph.linked_po_id,
-               s.supplier_name, s.supplier_code,
-               u.full_name as created_by_name,
-               linked_po.po_number as linked_po_number
-        FROM PO_Header ph
-        LEFT JOIN Suppliers s ON ph.supplier_id = s.supplier_id
-        LEFT JOIN Users u ON ph.created_by = u.user_id
-        LEFT JOIN PO_Header linked_po ON ph.linked_po_id = linked_po.po_id
-        $where_clause
-        ORDER BY ph.created_date DESC, ph.po_number DESC
-        OFFSET $offset ROWS FETCH NEXT $per_page ROWS ONLY
-    ";
+    // ดึงข้อมูล Materials
+    $sql = "SELECT TOP $per_page
+                mp.id,
+                mp.SSP_Code,
+                mp.Name,
+                mp.Name2,
+                mp.is_active,
+                mp.status,
+                mp.created_date,
+                ISNULL(mt.type_name, 'ไม่ระบุ') as material_type_name,
+                ISNULL(g.name, 'ไม่ระบุ') as group_name,
+                ISNULL(s.supplier_name, 'ไม่ระบุ') as supplier_name,
+                ISNULL(u1.unit_name, 'ไม่ระบุ') as unit_name
+            FROM Master_Products_ID mp
+            LEFT JOIN Material_Types mt ON mp.material_type_id = mt.material_type_id
+            LEFT JOIN Groups g ON mp.group_id = g.id
+            LEFT JOIN Suppliers s ON mp.supplier_id = s.supplier_id
+            LEFT JOIN Units u1 ON mp.Unit_id = u1.unit_id
+            WHERE $where_clause
+            ORDER BY mp.created_date DESC, mp.id DESC";
     
-    $stmt = $conn->prepare($sql);
+    // สำหรับหน้าอื่นๆ ใช้ ROW_NUMBER()
+    if ($page > 1) {
+        $start_row = $offset + 1;
+        $end_row = $offset + $per_page;
+        
+        $sql = "SELECT * FROM (
+                    SELECT 
+                        mp.id,
+                        mp.SSP_Code,
+                        mp.Name,
+                        mp.Name2,
+                        mp.is_active,
+                        mp.status,
+                        mp.created_date,
+                        ISNULL(mt.type_name, 'ไม่ระบุ') as material_type_name,
+                        ISNULL(g.name, 'ไม่ระบุ') as group_name,
+                        ISNULL(s.supplier_name, 'ไม่ระบุ') as supplier_name,
+                        ISNULL(u1.unit_name, 'ไม่ระบุ') as unit_name,
+                        ROW_NUMBER() OVER (ORDER BY mp.created_date DESC, mp.id DESC) as row_num
+                    FROM Master_Products_ID mp
+                    LEFT JOIN Material_Types mt ON mp.material_type_id = mt.material_type_id
+                    LEFT JOIN Groups g ON mp.group_id = g.id
+                    LEFT JOIN Suppliers s ON mp.supplier_id = s.supplier_id
+                    LEFT JOIN Units u1 ON mp.Unit_id = u1.unit_id
+                    WHERE $where_clause
+                ) ranked
+                WHERE ranked.row_num BETWEEN $start_row AND $end_row
+                ORDER BY ranked.row_num";
+    }
+    
+    $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
-    $po_list = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $materials = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
-    // ดึงข้อมูลสำหรับ Filter Dropdowns
-    $supplier_sql = "SELECT supplier_id, supplier_name FROM Suppliers WHERE is_active = 1 ORDER BY supplier_name";
-    $stmt = $conn->prepare($supplier_sql);
-    $stmt->execute();
-    $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // ดึงข้อมูลสำหรับ dropdowns
+    $material_types = [];
+    $groups = [];
+    $suppliers = [];
     
-    // สถิติ
-    $stats_sql = "
-        SELECT 
-            COUNT(*) as total_pos,
-            COUNT(CASE WHEN ph.status = 'Draft' THEN 1 END) as draft_count,
-            COUNT(CASE WHEN ph.status = 'Approved' THEN 1 END) as approved_count,
-            COUNT(CASE WHEN ph.status = 'Completed' THEN 1 END) as completed_count,
-            COUNT(CASE WHEN ph.is_material_po = 1 THEN 1 END) as material_count,
-            COUNT(CASE WHEN ph.is_freight_po = 1 THEN 1 END) as freight_count,
-            ISNULL(SUM(ph.total_amount), 0) as total_value
-        FROM PO_Header ph
-        LEFT JOIN Suppliers s ON ph.supplier_id = s.supplier_id
-        $where_clause
-    ";
+    try {
+        $stmt = $pdo->query("SELECT material_type_id, type_name FROM Material_Types WHERE is_active = 1 ORDER BY type_name");
+        $material_types = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->query("SELECT id, name FROM Groups WHERE is_active = 1 ORDER BY name");
+        $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->query("SELECT supplier_id, supplier_name FROM Suppliers WHERE is_active = 1 ORDER BY supplier_name");
+        $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        // ถ้าไม่มี is_active column
+        $stmt = $pdo->query("SELECT material_type_id, type_name FROM Material_Types ORDER BY type_name");
+        $material_types = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->query("SELECT id, name FROM Groups ORDER BY name");
+        $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->query("SELECT supplier_id, supplier_name FROM Suppliers ORDER BY supplier_name");
+        $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
     
-    $stmt = $conn->prepare($stats_sql);
-    $stmt->execute($params);
-    $stats_result = $stmt->fetch(PDO::FETCH_ASSOC);
-    $stats = $stats_result ? $stats_result : [
-        'total_pos' => 0,
-        'draft_count' => 0,
-        'approved_count' => 0,
-        'completed_count' => 0,
-        'material_count' => 0,
-        'freight_count' => 0,
-        'total_value' => 0
-    ];
+// ดึงสถิติ
+    $stats_sql = "SELECT 
+                    COUNT(*) as total_materials,
+                    SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as active_count,
+                    SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) as inactive_count
+                  FROM Master_Products_ID";
+    $stats_stmt = $pdo->query($stats_sql);
+    $stats = $stats_stmt->fetch(PDO::FETCH_ASSOC);
     
 } catch (PDOException $e) {
-    error_log("Error loading PO list: " . $e->getMessage());
-    error_log("SQL Error Code: " . $e->getCode());
-    error_log("SQL Error Info: " . print_r($e->errorInfo, true));
-    $po_list = [];
-    $suppliers = [];
-    $stats = [
-        'total_pos' => 0,
-        'draft_count' => 0,
-        'approved_count' => 0,
-        'completed_count' => 0,
-        'material_count' => 0,
-        'freight_count' => 0,
-        'total_value' => 0
-    ];
+    $error_message = "เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล: " . $e->getMessage();
+    $materials = [];
     $total_records = 0;
     $total_pages = 0;
-    $message = "เกิดข้อผิดพลาดในการโหลดข้อมูล: " . $e->getMessage();
-    $message_type = "danger";
-} catch (Exception $e) {
-    error_log("General error loading PO list: " . $e->getMessage());
-    $po_list = [];
-    $suppliers = [];
-    $stats = [
-        'total_pos' => 0,
-        'draft_count' => 0,
-        'approved_count' => 0,
-        'completed_count' => 0,
-        'material_count' => 0,
-        'freight_count' => 0,
-        'total_value' => 0
-    ];
-    $total_records = 0;
-    $total_pages = 0;
-    $message = "เกิดข้อผิดพลาดในการโหลดข้อมูล: " . $e->getMessage();
-    $message_type = "danger";
+    $stats = ['total' => 0, 'active' => 0, 'inactive' => 0];
 }
-
-// Status Colors
-$status_colors = [
-    'Draft' => 'warning',
-    'Approved' => 'success',
-    'Partial' => 'info',
-    'Completed' => 'primary',
-    'Cancelled' => 'danger'
-];
-
-// Status Labels
-$status_labels = [
-    'Draft' => 'แบบร่าง',
-    'Approved' => 'อนุมัติแล้ว',
-    'Partial' => 'บางส่วน',
-    'Completed' => 'เสร็จสิ้น',
-    'Cancelled' => 'ยกเลิก'
-];
 ?>
 
 <!DOCTYPE html>
@@ -233,852 +218,618 @@ $status_labels = [
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>รายการ Purchase Order - <?= htmlspecialchars(APP_NAME ?? 'Material Management') ?></title>
+    <title>รายการวัสดุ - ระบบจัดการคลังวัสดุ</title>
     
-    <!-- Security Headers -->
-    <meta http-equiv="X-Content-Type-Options" content="nosniff">
-    <meta http-equiv="X-Frame-Options" content="DENY">
-    <meta http-equiv="X-XSS-Protection" content="1; mode=block">
-    
-    <!-- Bootstrap CSS -->
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
     <!-- Font Awesome -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Select2 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    
+    <!-- Select2 Bootstrap 5 Theme -->
+    <link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet" />
     
     <style>
-        :root {
-    --primary-color: #8B4513;
-    --secondary-color: #FF8C00;
-    --accent-color: #A0522D;
-    --success-color: #059669;
-    --warning-color: #d97706;
-    --danger-color: #dc2626;
-    --primary-gradient: linear-gradient(135deg, #8B4513, #A0522D);
-    --primary-gradient-dark: linear-gradient(135deg, #A0522D, #8B4513);
-}
+    :root {
+        --primary-color: #8B4513;
+        --secondary-color: #FF8C00;
+        --accent-color: #A0522D;
+        --success-color: #059669;
+        --warning-color: #d97706;
+        --danger-color: #dc2626;
+    }
 
-body {
-    background: linear-gradient(135deg, #F5DEB3 0%, #DEB887 50%, #D2B48C 100%);
-    min-height: 100vh;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    color: var(--primary-color);
-}
-
-.navbar {
-    background: rgba(139, 69, 19, 0.9);
-    box-shadow: 0 4px 20px rgba(139, 69, 19, 0.3);
-}
-
-.navbar-brand, .nav-link {
-    color: white !important;
-}
-
-.nav-link:hover {
-    color: #FFD700 !important;
-    transform: translateY(-2px);
-    transition: all 0.3s ease;
-}
-
-.container-fluid {
-    max-width: 100%;
-    padding: 0 15px;
-    width: 100%;
-    margin: 0;
-}
-
-.fas {
-    color: var(--secondary-color);
-}
-
-.navbar .fas {
-    color: white;
-}
-        
-        .card {
-            border: none;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(255, 154, 86, 0.15);
-            background: white;
-            border: 2px solid #ffe4d1;
-        }
-        
-        .card-header {
-            background: var(--primary-gradient);
-            color: white;
-            border-radius: 18px 18px 0 0 !important;
-            border-bottom: none;
-        }
-        
-        .form-control, .form-select {
-            border-radius: 10px;
-            border: 2px solid #ffe4d1;
-            padding: 10px 15px;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus, .form-select:focus {
-            border-color: #ff9a56;
-            box-shadow: 0 0 0 3px rgba(255, 154, 86, 0.25);
-        }
-        
-        .btn-primary {
-            background: var(--primary-gradient);
-            border: none;
-            border-radius: 10px;
-            padding: 12px 25px;
-            font-weight: bold;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-primary:hover {
-            background: var(--primary-gradient-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(255, 154, 86, 0.3);
-        }
-        
-        .btn-success {
-            background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
-            border: none;
-            border-radius: 10px;
-            padding: 12px 25px;
-            font-weight: bold;
-        }
-        
-        .btn-outline-primary {
-            border: 2px solid #ff9a56;
-            color: #ff7f50;
-            border-radius: 10px;
-        }
-        
-        .btn-outline-primary:hover {
-            background: var(--primary-gradient);
-            border-color: #ff9a56;
-        }
-        
-        .alert {
-            border-radius: 15px;
-            border: none;
-        }
-        
-        .table {
-            border-radius: 15px;
-            overflow: hidden;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        
-        .table thead th {
-            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
-            color: white;
-            border: none;
-            font-weight: 600;
-            padding: 15px 12px;
-        }
-        
-        .table tbody tr {
-            transition: all 0.3s ease;
-        }
-        
-        .table tbody tr:hover {
-            background-color: #fff3e0;
-            transform: scale(1.02);
-            box-shadow: 0 4px 12px rgba(255, 154, 86, 0.2);
-        }
-        
-        .table td {
-            padding: 12px;
-            vertical-align: middle;
-            border-color: #ffe4d1;
-        }
-        
-        .stats-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-radius: 15px;
-            margin-bottom: 20px;
-        }
-        
-        .stats-item {
-            text-align: center;
-            padding: 20px 10px;
-        }
-        
-        .stats-number {
-            font-size: 2em;
-            font-weight: bold;
-            display: block;
-        }
-        
-        .stats-label {
-            font-size: 0.9em;
-            opacity: 0.9;
-            margin-top: 5px;
-        }
-        
-        .pagination .page-link {
-            border: 2px solid #ffe4d1;
-            color: #ff7f50;
-            border-radius: 8px;
-            margin: 0 3px;
-            padding: 10px 15px;
-        }
-        
-        .pagination .page-link:hover {
-            background-color: #ff9a56;
-            border-color: #ff9a56;
-            color: white;
-        }
-        
-        .pagination .page-item.active .page-link {
-            background: var(--primary-gradient);
-            border-color: #ff9a56;
-            color: white;
-        }
-        
-        .badge-status {
-            font-size: 0.8em;
-            padding: 5px 10px;
-            border-radius: 20px;
-        }
-        
-        .po-number {
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            font-size: 0.95em;
-        }
-        
-        .search-section {
-            background: rgba(255, 255, 255, 0.9);
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 5px 15px rgba(255, 154, 86, 0.1);
-        }
-        
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        .fade-in-up {
-            animation: fadeInUp 0.5s ease;
-        }
-        
-        .action-buttons {
-            display: flex;
-            gap: 5px;
-        }
-        
-        .btn-sm {
-            padding: 5px 10px;
-            font-size: 0.8em;
-            border-radius: 6px;
+    body {
+        background: linear-gradient(135deg, #F5DEB3 0%, #DEB887 50%, #D2B48C 100%);
+        min-height: 100vh;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: var(--primary-color);
+    }
+    
+    .navbar {
+        background: rgba(139, 69, 19, 0.9);
+        box-shadow: 0 4px 20px rgba(139, 69, 19, 0.3);
+        color: white;
+    }
+    
+    .navbar .nav-link {
+        color: white !important;
+        transition: all 0.3s ease;
+    }
+    
+    .navbar .nav-link:hover {
+        color: #FFD700 !important;
+        transform: translateY(-2px);
+    }
+    
+    .container-fluid {
+        max-width: 100%;
+        padding: 0 20px;
+    }
+    
+    .card {
+        border: none;
+        border-radius: 20px;
+        box-shadow: 0 10px 30px rgba(139, 69, 19, 0.15);
+        border: 1px solid rgba(139, 69, 19, 0.1);
+        margin-bottom: 20px;
+        background: rgba(255, 255, 255, 0.95);
+    }
+    
+    .card-header {
+        background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+        color: white;
+        border-radius: 20px 20px 0 0;
+        border-bottom: none;
+    }
+    
+    .stats-card {
+        background: rgba(255, 140, 0, 0.05);
+        border: 2px solid rgba(255, 140, 0, 0.2);
+        border-radius: 15px;
+        padding: 20px;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .stats-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 25px rgba(255, 140, 0, 0.2);
+        border-color: var(--secondary-color);
+    }
+    
+    .stats-number {
+        font-size: 2rem;
+        font-weight: bold;
+        color: var(--primary-color);
+    }
+    
+    .form-control:focus, .form-select:focus {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 0.2rem rgba(139, 69, 19, 0.25);
+    }
+    
+    .btn-primary {
+        background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+        border: none;
+        color: white;
+    }
+    
+    .btn-primary:hover {
+        background: linear-gradient(135deg, var(--accent-color), var(--primary-color));
+        transform: translateY(-2px);
+    }
+    
+    .btn-success {
+        background: linear-gradient(135deg, var(--success-color), #047857);
+        border: none;
+    }
+    
+    .table th {
+        background: rgba(139, 69, 19, 0.1);
+        color: var(--primary-color);
+        border: none;
+        font-weight: 600;
+    }
+    
+    .table td {
+        border-color: rgba(139, 69, 19, 0.1);
+        vertical-align: middle;
+    }
+    
+    .table tbody tr:hover {
+        background-color: rgba(255, 140, 0, 0.05);
+    }
+    
+    .search-section {
+        background: rgba(255, 255, 255, 0.8);
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid rgba(139, 69, 19, 0.1);
+    }
+    
+    .pagination .page-link {
+        color: var(--primary-color);
+        border-color: rgba(139, 69, 19, 0.2);
+    }
+    
+    .pagination .page-item.active .page-link {
+        background-color: var(--primary-color);
+        border-color: var(--primary-color);
+        color: white;
+    }
+    
+    .pagination .page-link:hover {
+        color: var(--primary-color);
+        background-color: rgba(139, 69, 19, 0.1);
+        border-color: var(--accent-color);
+    }
+    
+    .badge.bg-success {
+        background: linear-gradient(135deg, #28a745, #20c997) !important;
+    }
+    
+    .badge.bg-secondary {
+        background: linear-gradient(135deg, #6c757d, #adb5bd) !important;
+    }
+    
+    .alert-success {
+        background: rgba(5, 150, 105, 0.1);
+        color: #155724;
+        border-left: 4px solid var(--success-color);
+        border-radius: 12px;
+    }
+    
+    .alert-danger {
+        background: rgba(220, 53, 69, 0.1);
+        color: #721c24;
+        border-left: 4px solid var(--danger-color);
+        border-radius: 12px;
+    }
+    
+    .breadcrumb {
+        background: none;
+        padding: 0;
+        margin-bottom: 20px;
+    }
+    
+    .breadcrumb-item a {
+        color: var(--primary-color);
+        text-decoration: none;
+    }
+    
+    .breadcrumb-item a:hover {
+        color: var(--secondary-color);
+    }
+    
+    .breadcrumb-item.active {
+        color: var(--accent-color);
+    }
+    
+    .text-primary {
+        color: var(--primary-color) !important;
+    }
+    
+    /* Select2 Custom Styling */
+    .select2-container--default .select2-selection--single {
+        border: 1px solid #ced4da;
+        border-radius: 0.375rem;
+        height: 38px;
+        padding: 0.375rem 0.75rem;
+    }
+    
+    .select2-container--default .select2-selection--single .select2-selection__rendered {
+        line-height: 24px;
+        padding-left: 0;
+    }
+    
+    .select2-container--default .select2-selection--single .select2-selection__arrow {
+        height: 36px;
+    }
+    
+    .select2-container--default.select2-container--focus .select2-selection--single {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 0.2rem rgba(139, 69, 19, 0.25);
+    }
+    
+    .select2-dropdown {
+        border-color: var(--primary-color);
+    }
+    
+    .select2-container--default .select2-results__option--highlighted[aria-selected] {
+        background-color: var(--primary-color);
+    }
+    
+    @media (max-width: 768px) {
+        .container-fluid {
+            padding: 0 15px;
         }
         
         .table-responsive {
-            border-radius: 15px;
-            overflow: hidden;
+            font-size: 0.875rem;
         }
         
-        .linked-po {
-            font-size: 0.8em;
-            color: #666;
+        .stats-card {
+            margin-bottom: 15px;
         }
-        
-        .po-type-badge {
-            font-size: 0.7em;
-            padding: 3px 8px;
-            border-radius: 12px;
-        }
-    </style>
+    }
+</style>
 </head>
 <body>
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
-            <a class="navbar-brand fw-bold" href="../dashboard.php">
-                <i class="fas fa-list-alt me-2"></i><?= htmlspecialchars(APP_NAME ?? 'Material Management') ?>
+            <a class="navbar-brand fw-bold" href="../../pages/dashboard.php">
+                <i class="fas fa-arrow-left me-2"></i>กลับสู่ Dashboard
             </a>
             
             <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="create.php">
-                    <i class="fas fa-plus me-1"></i> สร้าง PO ใหม่
+                <a class="nav-link" href="../../dashboard.php">
+                    <i class="fas fa-home me-1"></i> Dashboard
                 </a>
-                <a class="nav-link" href="../dashboard.php">
-                    <i class="fas fa-arrow-left me-1"></i> กลับสู่หน้าหลัก
+                <a class="nav-link" href="../pos/index.php">
+                    <i class="fas fa-shopping-cart me-1"></i> PO
+                </a>
+                <a class="nav-link" href="add.php">
+                    <i class="fas fa-plus me-1"></i> เพิ่มวัสดุ
                 </a>
             </div>
         </div>
     </nav>
 
-    <!-- Main Content -->
-    <div class="container-fluid mt-4" style="padding-top: 20px;">
-        <!-- Header -->
-        <div class="row">
-            <div class="col-12">
-                <div class="card mb-4 fade-in-up">
-                    <div class="card-header">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <h4 class="mb-0">
-                                <i class="fas fa-clipboard-list me-2"></i>รายการ Purchase Order
-                            </h4>
-                            <a href="create.php" class="btn btn-success">
-                                <i class="fas fa-plus me-2"></i>สร้าง PO ใหม่
-                            </a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+    <!-- Breadcrumb -->
+    <div class="container-fluid mt-3">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item active">รายการวัสดุ</li>
+            </ol>
+        </nav>
+    </div>
 
-        <!-- Alert Messages -->
-        <?php if ($message): ?>
-        <div class="alert alert-<?= htmlspecialchars($message_type) ?> alert-dismissible fade show fade-in-up" role="alert">
-            <i class="fas fa-<?= $message_type === 'success' ? 'check-circle' : 'exclamation-triangle' ?> me-2"></i>
-            <?= htmlspecialchars($message) ?>
+    <div class="container-fluid">
+        <!-- Success/Error Messages -->
+        <?php if ($success_message): ?>
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <i class="fas fa-check-circle me-2"></i><?= htmlspecialchars($success_message) ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php endif; ?>
+        
+        <?php if ($error_message): ?>
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <i class="fas fa-exclamation-circle me-2"></i><?= htmlspecialchars($error_message) ?>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
         <?php endif; ?>
 
-        <!-- Statistics -->
-        <?php if (!empty($stats)): ?>
-        <div class="stats-card fade-in-up">
-            <div class="row g-0">
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number"><?= number_format($stats['total_pos']) ?></span>
-                        <div class="stats-label">PO ทั้งหมด</div>
-                    </div>
+        <!-- Statistics Cards -->
+        <div class="row mb-4">
+            <div class="col-md-4 mb-3">
+                <div class="stats-card">
+                    <div class="stats-number"><?= number_format($stats['total_materials']) ?></div>
+                    <div class="text-muted">วัสดุทั้งหมด</div>
                 </div>
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number"><?= number_format($stats['draft_count']) ?></span>
-                        <div class="stats-label">แบบร่าง</div>
-                    </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="stats-card">
+                    <div class="stats-number"><?= number_format($stats['active_count']) ?></div>
+                    <div class="text-muted">ใช้งานอยู่</div>
                 </div>
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number"><?= number_format($stats['approved_count']) ?></span>
-                        <div class="stats-label">อนุมัติแล้ว</div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number"><?= number_format($stats['material_count']) ?></span>
-                        <div class="stats-label">PO วัตถุดิบ</div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number"><?= number_format($stats['freight_count']) ?></span>
-                        <div class="stats-label">PO ค่าขนส่ง</div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stats-item">
-                        <span class="stats-number">฿<?= number_format($stats['total_value'], 2) ?></span>
-                        <div class="stats-label">มูลค่ารวม</div>
-                    </div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <div class="stats-card">
+                    <div class="stats-number"><?= number_format($stats['inactive_count']) ?></div>
+                    <div class="text-muted">ไม่ใช้งาน</div>
                 </div>
             </div>
         </div>
-        <?php endif; ?>
 
-        <!-- Search and Filter -->
-        <div class="search-section fade-in-up">
-            <form method="GET" id="searchForm">
-                <div class="row g-3">
-                    <div class="col-md-3">
-                        <label class="form-label">ค้นหา</label>
-                        <input type="text" class="form-control" name="search" value="<?= htmlspecialchars($search) ?>" 
-                               placeholder="เลข PO, Supplier, หมายเหตุ">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">สถานะ</label>
-                        <select class="form-select" name="status">
-                            <option value="">ทั้งหมด</option>
-                            <option value="Draft" <?= $status_filter === 'Draft' ? 'selected' : '' ?>>แบบร่าง</option>
-                            <option value="Approved" <?= $status_filter === 'Approved' ? 'selected' : '' ?>>อนุมัติแล้ว</option>
-                            <option value="Partial" <?= $status_filter === 'Partial' ? 'selected' : '' ?>>บางส่วน</option>
-                            <option value="Completed" <?= $status_filter === 'Completed' ? 'selected' : '' ?>>เสร็จสิ้น</option>
-                            <option value="Cancelled" <?= $status_filter === 'Cancelled' ? 'selected' : '' ?>>ยกเลิก</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">ประเภท</label>
-                        <select class="form-select" name="type">
-                            <option value="">ทั้งหมด</option>
-                            <option value="material" <?= $type_filter === 'material' ? 'selected' : '' ?>>วัตถุดิบ</option>
-                            <option value="freight" <?= $type_filter === 'freight' ? 'selected' : '' ?>>ค่าขนส่ง</option>
-                        </select>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Supplier</label>
-                        <select class="form-select" name="supplier">
-                            <option value="">ทั้งหมด</option>
-                            <?php foreach ($suppliers as $supplier): ?>
-                            <option value="<?= $supplier['supplier_id'] ?>" <?= $supplier_filter == $supplier['supplier_id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($supplier['supplier_name']) ?>
-                            </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="col-md-1">
-                        <label class="form-label">จาก</label>
-                        <input type="date" class="form-control" name="date_from" value="<?= htmlspecialchars($date_from) ?>">
-                    </div>
-                    <div class="col-md-1">
-                        <label class="form-label">ถึง</label>
-                        <input type="date" class="form-control" name="date_to" value="<?= htmlspecialchars($date_to) ?>">
-                    </div>
-                    <div class="col-md-1 d-flex align-items-end">
-                        <div class="d-grid w-100">
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-search me-1"></i>ค้นหา
-                            </button>
-                        </div>
-                    </div>
+        <!-- Search and Filter Section -->
+        <div class="search-section">
+            <form method="GET" class="row g-3">
+                <div class="col-md-3">
+                    <label for="search" class="form-label">คำค้นหา</label>
+                    <input type="text" 
+                           class="form-control" 
+                           id="search" 
+                           name="search" 
+                           value="<?= htmlspecialchars($search_query) ?>"
+                           placeholder="รหัส SSP หรือชื่อวัสดุ">
                 </div>
-                <div class="row mt-2">
-                    <div class="col-12 text-end">
-                        <a href="?" class="btn btn-outline-primary btn-sm">
-                            <i class="fas fa-times me-1"></i>ล้างตัวกรอง
-                        </a>
-                    </div>
+                
+                <div class="col-md-3">
+                    <label for="material_type" class="form-label">ประเภท</label>
+                    <select class="form-select" id="material_type" name="material_type">
+                        <option value="">-- ทั้งหมด --</option>
+                        <?php foreach ($material_types as $type): ?>
+                        <option value="<?= $type['material_type_id'] ?>" 
+                                <?= $material_type_filter == $type['material_type_id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($type['type_name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="col-md-3">
+                    <label for="group" class="form-label">กลุ่ม</label>
+                    <select class="form-select" id="group" name="group">
+                        <option value="">-- ทั้งหมด --</option>
+                        <?php foreach ($groups as $group): ?>
+                        <option value="<?= $group['id'] ?>" 
+                                <?= $group_filter == $group['id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($group['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="col-md-3">
+                    <label for="supplier" class="form-label">ชื่อซัพพลายเออร์</label>
+                    <select class="form-select select2" id="supplier" name="supplier">
+                        <option value="">-- ทั้งหมด --</option>
+                        <?php foreach ($suppliers as $supplier): ?>
+                        <option value="<?= $supplier['supplier_id'] ?>" 
+                                <?= $supplier_filter == $supplier['supplier_id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($supplier['supplier_name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="col-md-3">
+                    <label for="status" class="form-label">สถานะ</label>
+                    <select class="form-select" id="status" name="status">
+                        <option value="">-- ทั้งหมด --</option>
+                        <option value="active" <?= $status_filter === 'active' ? 'selected' : '' ?>>ใช้งาน</option>
+                        <option value="inactive" <?= $status_filter === 'inactive' ? 'selected' : '' ?>>ไม่ใช้งาน</option>
+                    </select>
+                </div>
+                
+                <div class="col-md-9 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary me-2">
+                        <i class="fas fa-search me-1"></i>ค้นหา
+                    </button>
+                    <a href="list.php" class="btn btn-secondary me-2">
+                        <i class="fas fa-sync-alt me-1"></i>รีเซ็ต
+                    </a>
+                    <a href="add.php" class="btn btn-success">
+                        <i class="fas fa-plus me-1"></i>เพิ่มวัสดุใหม่
+                    </a>
                 </div>
             </form>
         </div>
 
-        <!-- PO List -->
-        <div class="card fade-in-up">
-            <div class="card-header">
-                <div class="d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0">
-                        <i class="fas fa-table me-2"></i>รายการ PO
-                        <?php if ($total_records > 0): ?>
-                        <span class="badge bg-light text-dark ms-2"><?= number_format($total_records) ?> รายการ</span>
-                        <?php endif; ?>
-                    </h5>
-                    <small class="text-light">
-                        หน้า <?= $page ?> จาก <?= $total_pages ?> | แสดง <?= count($po_list) ?> จาก <?= number_format($total_records) ?> รายการ
-                    </small>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <?php if (empty($po_list)): ?>
-                <div class="text-center py-5">
-                    <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
-                    <h5 class="text-muted">ไม่พบข้อมูล PO</h5>
-                    <p class="text-muted">ลองปรับเงื่อนไขการค้นหา หรือ <a href="create.php">สร้าง PO ใหม่</a></p>
-                </div>
-                <?php else: ?>
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th width="12%">เลขที่ PO</th>
-                                <th width="8%">ประเภท</th>
-                                <th width="20%">Supplier</th>
-                                <th width="8%">วันที่</th>
-                                <th width="10%">มูลค่า</th>
-                                <th width="8%">สถานะ</th>
-                                <th width="12%">เชื่อมโยง</th>
-                                <th width="10%">สร้างโดย</th>
-                                <th width="12%">จัดการ</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($po_list as $po): ?>
-                            <tr>
-                                <td>
-                                    <div class="po-number"><?= htmlspecialchars($po['po_number']) ?></div>
-                                    <?php if (!empty($po['notes'])): ?>
-                                    <small class="text-muted">
-                                        <i class="fas fa-sticky-note me-1"></i><?= htmlspecialchars(substr($po['notes'], 0, 50)) ?><?= strlen($po['notes']) > 50 ? '...' : '' ?>
-                                    </small>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <?php if ($po['is_material_po']): ?>
-                                    <span class="badge bg-primary po-type-badge">
-                                        <i class="fas fa-box me-1"></i>วัตถุดิบ
-                                    </span>
-                                    <?php endif; ?>
-                                    <?php if ($po['is_freight_po']): ?>
-                                    <span class="badge bg-info po-type-badge">
-                                        <i class="fas fa-truck me-1"></i>ค่าขนส่ง
-                                    </span>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <div><?= htmlspecialchars($po['supplier_name']) ?></div>
-                                    <?php if (!empty($po['supplier_code'])): ?>
-                                    <small class="text-muted"><?= htmlspecialchars($po['supplier_code']) ?></small>
-                                    <?php endif; ?>
-                                </td>
-                                <td><?= date('d/m/Y', strtotime($po['po_date'])) ?></td>
-                                <td class="text-end">
-                                    <strong>฿<?= number_format($po['total_amount'], 2) ?></strong>
-                                </td>
-                                <td>
-                                    <?php
-                                    $status_color = $status_colors[$po['status']] ?? 'secondary';
-                                    $status_label = $status_labels[$po['status']] ?? $po['status'];
-                                    ?>
-                                    <span class="badge bg-<?= $status_color ?> badge-status"><?= $status_label ?></span>
-                                </td>
-                                <td>
-                                    <?php if (!empty($po['linked_po_number'])): ?>
-                                    <div class="linked-po">
-                                        <i class="fas fa-link me-1"></i>
-                                        <a href="?search=<?= urlencode($po['linked_po_number']) ?>" class="text-decoration-none">
-                                            <?= htmlspecialchars($po['linked_po_number']) ?>
-                                        </a>
-                                    </div>
-                                    <?php else: ?>
-                                    <span class="text-muted">-</span>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <?= htmlspecialchars($po['created_by_name'] ?? 'N/A') ?>
-                                    <br><small class="text-muted"><?= date('d/m/y H:i', strtotime($po['created_date'])) ?></small>
-                                </td>
-                                <td>
-                                    <div class="action-buttons">
-                                        <a href="view.php?id=<?= $po['po_id'] ?>" class="btn btn-outline-primary btn-sm" title="ดู">
-                                            <i class="fas fa-eye"></i>
-                                        </a>
-                                        <?php if ($auth->hasRole(['editor', 'admin']) && in_array($po['status'], ['Draft', 'Approved'])): ?>
-                                        <a href="edit.php?id=<?= $po['po_id'] ?>" class="btn btn-outline-warning btn-sm" title="แก้ไข">
-                                            <i class="fas fa-edit"></i>
-                                        </a>
+        <!-- Materials Table -->
+        <div class="row">
+            <div class="col-12">
+                <div class="table-card card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-list me-2"></i>รายการวัสดุ
+                        </h5>
+                        <span class="badge bg-light text-dark">
+                            <?= number_format($total_records) ?> รายการ
+                        </span>
+                    </div>
+                    
+                    <?php if (empty($materials)): ?>
+                    <div class="empty-state">
+                        <i class="fas fa-inbox"></i>
+                        <h4>ไม่พบข้อมูลวัสดุ</h4>
+                        <p>ไม่มีข้อมูลที่ตรงกับเงื่อนไขการค้นหา</p>
+                        <a href="add.php" class="btn btn-primary mt-3">
+                            <i class="fas fa-plus me-1"></i>เพิ่มวัสดุใหม่
+                        </a>
+                    </div>
+                    <?php else: ?>
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th width="5%">#</th>
+                                    <th width="15%">รหัส SSP</th>
+                                    <th width="25%">ชื่อวัสดุ</th>
+                                    <th width="15%">ประเภท</th>
+                                    <th width="10%">กลุ่ม</th>
+                                    <th width="15%">ซัพพลายเออร์</th>
+                                    <th width="8%">สถานะ</th>
+                                    <th width="7%">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $row_number = $offset + 1;
+                                foreach ($materials as $material): 
+                                ?>
+                                <tr>
+                                    <td><?= $row_number++ ?></td>
+                                    <td>
+                                        <span class="fw-bold text-primary"><?= htmlspecialchars($material['SSP_Code']) ?></span>
+                                    </td>
+                                    <td>
+                                        <div class="fw-bold"><?= htmlspecialchars($material['Name']) ?></div>
+                                        <?php if ($material['Name2']): ?>
+                                        <small class="text-muted"><?= htmlspecialchars($material['Name2']) ?></small>
                                         <?php endif; ?>
-                                        <?php if ($auth->hasRole('admin')): ?>
-                                        <button type="button" class="btn btn-outline-danger btn-sm" title="ลบ" 
-                                                onclick="confirmDelete(<?= $po['po_id'] ?>, '<?= htmlspecialchars($po['po_number']) ?>')">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
+                                    </td>
+                                    <td><?= htmlspecialchars($material['material_type_name']) ?></td>
+                                    <td><?= htmlspecialchars($material['group_name']) ?></td>
+                                    <td><?= htmlspecialchars($material['supplier_name']) ?></td>
+                                    <td>
+                                        <?php if ($material['is_active']): ?>
+                                        <span class="badge bg-success">ใช้งาน</span>
+                                        <?php else: ?>
+                                        <span class="badge bg-secondary">ไม่ใช้งาน</span>
                                         <?php endif; ?>
-                                    </div>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                <?php endif; ?>
-            </div>
-
-            <!-- Pagination -->
-            <?php if ($total_pages > 1): ?>
-            <div class="card-footer">
-                <nav aria-label="Page navigation">
-                    <ul class="pagination justify-content-center mb-0">
-                        <!-- Previous Page -->
-                        <?php if ($page > 1): ?>
-                        <li class="page-item">
-                            <a class="page-link" href="?<?= http_build_query(array_merge($_GET, ['page' => $page - 1])) ?>">
-                                <i class="fas fa-chevron-left"></i> ก่อนหน้า
-                            </a>
-                        </li>
-                        <?php endif; ?>
-                        
-                        <!-- Page Numbers -->
-                        <?php
-                        $start_page = max(1, $page - 2);
-                        $end_page = min($total_pages, $page + 2);
-                        
-                        if ($start_page > 1): ?>
-                        <li class="page-item">
-                            <a class="page-link" href="?<?= http_build_query(array_merge($_GET, ['page' => 1])) ?>">1</a>
-                        </li>
-                        <?php if ($start_page > 2): ?>
-                        <li class="page-item disabled">
-                            <span class="page-link">...</span>
-                        </li>
-                        <?php endif; ?>
-                        <?php endif; ?>
-                        
-                        <?php for ($i = $start_page; $i <= $end_page; $i++): ?>
-                        <li class="page-item <?= $i == $page ? 'active' : '' ?>">
-                            <a class="page-link" href="?<?= http_build_query(array_merge($_GET, ['page' => $i])) ?>"><?= $i ?></a>
-                        </li>
-                        <?php endfor; ?>
-                        
-                        <?php if ($end_page < $total_pages): ?>
-                        <?php if ($end_page < $total_pages - 1): ?>
-                        <li class="page-item disabled">
-                            <span class="page-link">...</span>
-                        </li>
-                        <?php endif; ?>
-                        <li class="page-item">
-                            <a class="page-link" href="?<?= http_build_query(array_merge($_GET, ['page' => $total_pages])) ?>"><?= $total_pages ?></a>
-                        </li>
-                        <?php endif; ?>
-                        
-                        <!-- Next Page -->
-                        <?php if ($page < $total_pages): ?>
-                        <li class="page-item">
-                            <a class="page-link" href="?<?= http_build_query(array_merge($_GET, ['page' => $page + 1])) ?>">
-                                ถัดไป <i class="fas fa-chevron-right"></i>
-                            </a>
-                        </li>
-                        <?php endif; ?>
-                    </ul>
-                </nav>
-                
-                <div class="text-center mt-3">
-                    <small class="text-muted">
-                        แสดงรายการ <?= ($page - 1) * $per_page + 1 ?> - <?= min($page * $per_page, $total_records) ?> 
-                        จากทั้งหมด <?= number_format($total_records) ?> รายการ
-                    </small>
-                </div>
-            </div>
-            <?php endif; ?>
-        </div>
-
-        <!-- Quick Actions -->
-        <div class="row mt-4">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h6 class="mb-0"><i class="fas fa-bolt me-2"></i>การดำเนินการด่วน</h6>
+                                    </td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <a href="view.php?id=<?= $material['id'] ?>" 
+                                               class="btn btn-outline-primary" title="ดูรายละเอียด">
+                                                <i class="fas fa-eye"></i>
+                                            </a>
+                                            <a href="edit.php?id=<?= $material['id'] ?>" 
+                                               class="btn btn-outline-warning" title="แก้ไข">
+                                                <i class="fas fa-edit"></i>
+                                            </a>
+                                            <?php if ($auth->hasRole(['admin'])): ?>
+                                            <button type="button" class="btn btn-outline-danger" 
+                                                    onclick="deleteMaterial(<?= $material['id'] ?>, '<?= htmlspecialchars($material['SSP_Code']) ?>')" 
+                                                    title="ลบ">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                            <?php endif; ?>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
-                    <div class="card-body">
-                        <div class="d-grid gap-2">
-                            <a href="create.php" class="btn btn-success">
-                                <i class="fas fa-plus me-2"></i>สร้าง PO ใหม่
-                            </a>
-                            <a href="?status=Draft" class="btn btn-outline-warning">
-                                <i class="fas fa-edit me-2"></i>ดู PO แบบร่าง (<?= $stats['draft_count'] ?? 0 ?>)
-                            </a>
-                            <a href="?status=Approved" class="btn btn-outline-success">
-                                <i class="fas fa-check me-2"></i>ดู PO ที่อนุมัติแล้ว (<?= $stats['approved_count'] ?? 0 ?>)
-                            </a>
+
+                    <!-- Pagination -->
+                    <?php if ($total_pages > 1): ?>
+                    <div class="card-footer">
+                        <nav>
+                            <ul class="pagination pagination-sm mb-0 justify-content-center">
+                                <?php if ($page > 1): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page=<?= $page - 1 ?>&<?= http_build_query(array_diff_key($_GET, ['page' => ''])) ?>">
+                                        <i class="fas fa-chevron-left"></i>
+                                    </a>
+                                </li>
+                                <?php endif; ?>
+                                
+                                <?php
+                                $start_page = max(1, $page - 2);
+                                $end_page = min($total_pages, $page + 2);
+                                
+                                for ($i = $start_page; $i <= $end_page; $i++): ?>
+                                <li class="page-item <?= $i === $page ? 'active' : '' ?>">
+                                    <a class="page-link" href="?page=<?= $i ?>&<?= http_build_query(array_diff_key($_GET, ['page' => ''])) ?>">
+                                        <?= $i ?>
+                                    </a>
+                                </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($page < $total_pages): ?>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page=<?= $page + 1 ?>&<?= http_build_query(array_diff_key($_GET, ['page' => ''])) ?>">
+                                        <i class="fas fa-chevron-right"></i>
+                                    </a>
+                                </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <div class="text-center mt-2">
+                            <small class="text-muted">
+                                หน้า <?= $page ?> จาก <?= $total_pages ?> 
+                                (<?= number_format($total_records) ?> รายการทั้งหมด)
+                            </small>
                         </div>
                     </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h6 class="mb-0"><i class="fas fa-chart-bar me-2"></i>สรุปรายงาน</h6>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="text-center p-2 bg-light rounded">
-                                    <div class="h5 mb-1 text-primary"><?= number_format($stats['total_pos'] ?? 0) ?></div>
-                                    <small>PO ทั้งหมด</small>
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <div class="text-center p-2 bg-light rounded">
-                                    <div class="h5 mb-1 text-success">฿<?= number_format($stats['total_value'] ?? 0, 0) ?></div>
-                                    <small>มูลค่ารวม</small>
-                                </div>
-                            </div>
-                        </div>
-                        <hr>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <a href="?type=material" class="btn btn-outline-primary btn-sm w-100">
-                                    <i class="fas fa-box me-1"></i>วัตถุดิบ (<?= $stats['material_count'] ?? 0 ?>)
-                                </a>
-                            </div>
-                            <div class="col-6">
-                                <a href="?type=freight" class="btn btn-outline-info btn-sm w-100">
-                                    <i class="fas fa-truck me-1"></i>ค่าขนส่ง (<?= $stats['freight_count'] ?? 0 ?>)
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Footer spacing -->
-        <div class="pb-4"></div>
-    </div>
-
-    <!-- Delete Confirmation Modal -->
-    <div class="modal fade" id="deleteModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">
-                        <i class="fas fa-exclamation-triangle text-warning me-2"></i>ยืนยันการลบ
-                    </h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <p class="mb-3">คุณต้องการลบ PO นี้ใช่หรือไม่?</p>
-                    <div class="alert alert-warning">
-                        <strong>เลขที่ PO:</strong> <span id="deletePoNumber"></span><br>
-                        <small><i class="fas fa-info-circle me-1"></i>การลบจะไม่สามารถกู้คืนได้</small>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">ยกเลิก</button>
-                    <button type="button" class="btn btn-danger" onclick="deletePO()">
-                        <i class="fas fa-trash me-1"></i>ลบ PO
-                    </button>
+                    <?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     
-    <script>
-        let deletePoId = null;
+    <!-- Select2 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    
+   <script>
+        function refreshPage() {
+            window.location.reload();
+        }
         
-        // Helper Functions
-        function showAlert(message, type = 'info') {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = `alert alert-${type} alert-dismissible fade show fade-in-up`;
-            alertDiv.innerHTML = `
-                <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'danger' ? 'exclamation-triangle' : 'info-circle'} me-2"></i>
-                ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            
-            const container = document.querySelector('.container-fluid');
-            container.insertBefore(alertDiv, container.children[2]);
-            
-            setTimeout(() => {
-                if (alertDiv.parentNode) {
-                    alertDiv.remove();
-                }
-            }, 5000);
-        }
-
-        // Delete Confirmation
-        function confirmDelete(poId, poNumber) {
-            deletePoId = poId;
-            document.getElementById('deletePoNumber').textContent = poNumber;
-            
-            const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
-            modal.show();
-        }
-
-        // Delete PO
-        async function deletePO() {
-            if (!deletePoId) return;
-            
-            try {
-                const response = await fetch('delete.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        po_id: deletePoId
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    showAlert('ลบ PO เรียบร้อยแล้ว', 'success');
-                    // Reload page after delay
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1500);
-                } else {
-                    showAlert('เกิดข้อผิดพลาด: ' + (result.message || 'ไม่สามารถลบ PO ได้'), 'danger');
-                }
-            } catch (error) {
-                showAlert('เกิดข้อผิดพลาดในการเชื่อมต่อ', 'danger');
-            }
-            
-            // Hide modal
-            const modal = bootstrap.Modal.getInstance(document.getElementById('deleteModal'));
-            modal.hide();
-            
-            deletePoId = null;
-        }
-
-        // Auto-submit search form on change
-        document.addEventListener('DOMContentLoaded', function() {
-            const searchInputs = ['select[name="status"]', 'select[name="type"]', 'select[name="supplier"]'];
-            
-            searchInputs.forEach(selector => {
-                const element = document.querySelector(selector);
-                if (element) {
-                    element.addEventListener('change', function() {
-                        document.getElementById('searchForm').submit();
-                    });
-                }
-            });
-            
-            // Search on Enter key
-            const searchInput = document.querySelector('input[name="search"]');
-            if (searchInput) {
-                searchInput.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        document.getElementById('searchForm').submit();
+        $(document).ready(function() {
+            // Initialize Select2 for searchable dropdown
+            if ($.fn.select2) {
+                $('.select2').select2({
+                    theme: 'bootstrap-5',
+                    placeholder: 'เลือกหรือค้นหาซัพพลายเออร์',
+                    allowClear: true,
+                    width: '100%',
+                    language: {
+                        noResults: function() {
+                            return "ไม่พบข้อมูล";
+                        },
+                        searching: function() {
+                            return "กำลังค้นหา...";
+                        }
                     }
                 });
-            }
-
-            // Show loading state for table
-            const table = document.querySelector('.table');
-            if (table && table.dataset.loading === 'true') {
-                table.style.opacity = '0.6';
+                console.log('Select2 initialized successfully');
+            } else {
+                console.error('Select2 library not loaded');
             }
             
-            console.log('✅ PO List Page initialized successfully');
-        });
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', function(e) {
-            // Ctrl+N หรือ Cmd+N = สร้าง PO ใหม่
-            if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-                e.preventDefault();
-                window.location.href = 'create.php';
-            }
+            // แสดง tooltip
+            $('[title]').tooltip();
             
-            // F3 = Focus search
-            if (e.key === 'F3') {
-                e.preventDefault();
-                document.querySelector('input[name="search"]').focus();
-            }
-        });
-
-        // Highlight current filters
-        document.addEventListener('DOMContentLoaded', function() {
-            const params = new URLSearchParams(window.location.search);
-            const hasFilters = Array.from(params.entries()).some(([key, value]) => 
-                key !== 'page' && value !== ''
+            // เพิ่มเอฟเฟกต์ hover สำหรับการ์ดสถิติ
+            $('.stats-card').hover(
+                function() {
+                    $(this).find('.stats-number').addClass('text-primary');
+                },
+                function() {
+                    $(this).find('.stats-number').removeClass('text-primary');
+                }
             );
             
-            if (hasFilters) {
-                const searchSection = document.querySelector('.search-section');
-                if (searchSection) {
-                    searchSection.style.borderLeft = '5px solid #ff9a56';
-                }
-            }
+            console.log('Materials List page loaded successfully');
+            console.log('Total materials:', <?= $total_records ?>);
+            console.log('Current page:', <?= $page ?>);
+            console.log('Theme: Updated to match new Dashboard theme');
         });
-
-        // Table row click to view
-        document.querySelectorAll('.table tbody tr').forEach(row => {
-            row.style.cursor = 'pointer';
-            row.addEventListener('click', function(e) {
-                // Skip if clicked on action buttons
-                if (e.target.closest('.action-buttons')) return;
+        
+        function deleteMaterial(materialId, sspCode) {
+            if (confirm(`ต้องการลบวัสดุ ${sspCode} หรือไม่?\n\nการดำเนินการนี้ไม่สามารถยกเลิกได้`)) {
+                // สร้างฟอร์มเพื่อส่งข้อมูล POST
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'delete.php';
                 
-                const viewLink = this.querySelector('a[href*="view.php"]');
-                if (viewLink) {
-                    window.location.href = viewLink.href;
-                }
-            });
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'material_id';
+                input.value = materialId;
+                
+                form.appendChild(input);
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        // Keyboard shortcuts
+        $(document).keydown(function(e) {
+            // Ctrl + N = เพิ่มวัสดุใหม่
+            if (e.ctrlKey && e.key === 'n') {
+                e.preventDefault();
+                window.location.href = 'add.php';
+            }
+            
+            // F5 = รีเฟรช
+            if (e.key === 'F5') {
+                e.preventDefault();
+                refreshPage();
+            }
+            
+            // Ctrl + F = Focus ช่องค้นหา
+            if (e.ctrlKey && e.key === 'f') {
+                e.preventDefault();
+                $('input[name="search"]').focus();
+            }
         });
     </script>
 </body>
